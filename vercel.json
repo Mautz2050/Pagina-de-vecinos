@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "cd client-app && npm install && npm run build",
+  "buildCommand": "npm run vercel-build",
   "outputDirectory": "client-app/dist",
   "builds": [
     {

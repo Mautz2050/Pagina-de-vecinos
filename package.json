@@ -1,0 +1,7 @@
+{
+  "name": "junta-vecinos",
+  "version": "1.0.0",
+  "scripts": {
+    "vercel-build": "npm install --prefix client-app && npm run build --prefix client-app"
+  }
+}
