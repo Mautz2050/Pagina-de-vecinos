@@ -255,7 +255,7 @@ export default function App() {
       setSlots(toSlots(r));
       setPend(admin ? await api.pendientes() : []);
     } catch (e) {
-      setToast(e.message === "Debe ingresar con su cuenta." ? "Su sesión venció. Ingrese nuevamente." : "No se pudo conectar con el servidor.");
+      setToast(e.message === "Debe ingresar con su cuenta." ? "Su sesión venció. Ingrese nuevamente." : (e.message || "No se pudo conectar con el servidor."));
     }
   }, [admin]);
   useEffect(() => { reload(); }, [reload]);

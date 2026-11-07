@@ -9,20 +9,33 @@ const { Pool } = pkg;
 const SECRET = process.env.JWT_SECRET || "cambie-esta-clave-en-produccion";
 const CATS = ["seguridad", "eventos", "beneficios", "noticias"];
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+let pool = null;
+const getPool = () => {
+  if (!pool) {
+    if (!process.env.DATABASE_URL) {
+      throw new Error("DATABASE_URL no está configurada en las variables de entorno de Vercel.");
+    }
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
+    });
+    pool.on("error", (err) => {
+      console.error("Error inesperado en el pool de PostgreSQL:", err);
+    });
+  }
+  return pool;
+};
 
 const getOne = async (text, params = []) => {
-  const { rows } = await pool.query(text, params);
+  const { rows } = await getPool().query(text, params);
   return rows[0] || null;
 };
 const getAll = async (text, params = []) => {
-  const { rows } = await pool.query(text, params);
+  const { rows } = await getPool().query(text, params);
   return rows;
 };
-const run = async (text, params = []) => pool.query(text, params);
+const run = async (text, params = []) => getPool().query(text, params);
 
 let ready = false;
 const initDB = async () => {
@@ -77,7 +90,29 @@ const initDB = async () => {
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
-app.use(async (_req, _res, next) => { await initDB(); next(); });
+
+const router = express.Router();
+
+// Ruta de diagnóstico
+router.get("/health", async (_req, res) => {
+  try {
+    await initDB();
+    res.json({ ok: true, database: "connected" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Middleware para asegurar conexión a DB antes de atender peticiones
+router.use(async (_req, res, next) => {
+  try {
+    await initDB();
+    next();
+  } catch (err) {
+    console.error("Error al conectar a la base de datos:", err.message);
+    return res.status(500).json({ error: `Error de base de datos: ${err.message}` });
+  }
+});
 
 const sign = (u) => ({
   token: jwt.sign({ id: u.id, nombre: u.nombre, rol: u.rol }, SECRET, { expiresIn: "7d" }),
@@ -91,7 +126,7 @@ const auth = (rol) => (q, r, next) => {
 };
 
 // Auth
-app.post("/api/register", async (q, r) => {
+router.post("/register", async (q, r) => {
   const { nombre = "", email = "", password = "" } = q.body;
   if (!nombre.trim() || !/^\S+@\S+\.\S+$/.test(email) || password.length < 6)
     return r.status(400).json({ error: "Revise nombre, correo y contraseña (mín. 6 caracteres)." });
@@ -104,7 +139,7 @@ app.post("/api/register", async (q, r) => {
   } catch { r.status(409).json({ error: "Ese correo ya está registrado." }); }
 });
 
-app.post("/api/login", async (q, r) => {
+router.post("/login", async (q, r) => {
   const u = await getOne("SELECT * FROM usuarios WHERE email=$1", [(q.body.email || "").toLowerCase()]);
   if (!u || !bcrypt.compareSync(q.body.password || "", u.hash))
     return r.status(401).json({ error: "Correo o contraseña incorrectos." });
@@ -112,7 +147,7 @@ app.post("/api/login", async (q, r) => {
 });
 
 // Foro
-app.get("/api/posts", async (_q, r) => {
+router.get("/posts", async (_q, r) => {
   const ps = await getAll(`
     SELECT p.id, p.categoria cat, p.titulo t, p.mensaje b, u.nombre autor,
            TO_CHAR(p.creado AT TIME ZONE 'America/Santiago','YYYY-MM-DD HH24:MI') creado
@@ -124,7 +159,7 @@ app.get("/api/posts", async (_q, r) => {
   r.json(ps.map(p => ({ id:p.id, cat:p.cat, t:p.t, b:p.b, by:p.autor, when:p.creado, cm:p.cm })));
 });
 
-app.post("/api/posts", auth("directiva"), async (q, r) => {
+router.post("/posts", auth("directiva"), async (q, r) => {
   const { categoria, titulo="", mensaje="" } = q.body;
   if (!CATS.includes(categoria) || !titulo.trim() || !mensaje.trim())
     return r.status(400).json({ error: "Complete categoría, título y mensaje." });
@@ -133,7 +168,7 @@ app.post("/api/posts", auth("directiva"), async (q, r) => {
   r.status(201).json({ ok: true });
 });
 
-app.post("/api/posts/:id/comments", auth(), async (q, r) => {
+router.post("/posts/:id/comments", auth(), async (q, r) => {
   const texto = (q.body.texto || "").trim();
   if (!texto) return r.status(400).json({ error: "Escriba un comentario." });
   try {
@@ -157,20 +192,24 @@ const crear = async (q, r, estado) => {
   } catch { r.status(409).json({ error: "Ese horario ya fue solicitado u ocupado." }); }
 };
 
-app.get("/api/reservas", async (_q, r) =>
+router.get("/reservas", async (_q, r) =>
   r.json(await getAll("SELECT id,fecha,hora,estado FROM reservas WHERE estado!='rechazada'")));
-app.post("/api/reservas", auth(), (q,r) => crear(q,r,"pendiente"));
-app.post("/api/bloqueos", auth("directiva"), (q,r) => crear(q,r,"bloqueada"));
-app.get("/api/reservas/pendientes", auth("directiva"), async (_q,r) =>
+router.post("/reservas", auth(), (q,r) => crear(q,r,"pendiente"));
+router.post("/bloqueos", auth("directiva"), (q,r) => crear(q,r,"bloqueada"));
+router.get("/reservas/pendientes", auth("directiva"), async (_q,r) =>
   r.json(await getAll(`SELECT r.id,r.fecha,r.hora,r.telefono,r.motivo,u.nombre
     FROM reservas r JOIN usuarios u ON u.id=r.usuario_id
     WHERE r.estado='pendiente' ORDER BY r.fecha,r.hora`)));
-app.patch("/api/reservas/:id", auth("directiva"), async (q,r) => {
+router.patch("/reservas/:id", auth("directiva"), async (q,r) => {
   const { estado } = q.body;
   if (!["aprobada","rechazada"].includes(estado))
     return r.status(400).json({ error: "Estado inválido." });
   const res = await run("UPDATE reservas SET estado=$1 WHERE id=$2 AND estado='pendiente'", [estado, q.params.id]);
   res.rowCount ? r.json({ ok:true }) : r.status(404).json({ error: "Solicitud no encontrada o ya resuelta." });
 });
+
+// Maneja peticiones tanto si llegan con el prefijo /api como si el rewrite las pasa sin él
+app.use("/api", router);
+app.use("/", router);
 
 export default app;
