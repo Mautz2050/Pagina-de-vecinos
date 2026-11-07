@@ -9,14 +9,26 @@ const { Pool } = pkg;
 const SECRET = process.env.JWT_SECRET || "cambie-esta-clave-en-produccion";
 const CATS = ["seguridad", "eventos", "beneficios", "noticias"];
 
+const cleanUrl = (input) => {
+  let val = (input || "").trim();
+  if (val.startsWith("DATABASE_URL=")) {
+    val = val.replace(/^DATABASE_URL=/, "").trim();
+  }
+  if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    val = val.slice(1, -1).trim();
+  }
+  return val;
+};
+
 let pool = null;
 const getPool = () => {
   if (!pool) {
-    if (!process.env.DATABASE_URL) {
+    const raw = cleanUrl(process.env.DATABASE_URL);
+    if (!raw) {
       throw new Error("DATABASE_URL no está configurada en las variables de entorno de Vercel.");
     }
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString: raw,
       ssl: { rejectUnauthorized: false },
       connectionTimeoutMillis: 10000,
     });
